@@ -7,9 +7,10 @@ import android.graphics.Paint
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 
 /**
- * مدل ۴ گوشه اصلی سند (به ترتیب: بالا-چپ، بالا-راست، پایین-راست، پایین-چپ)
+ * مدل ۴ گوشه اصلی سند (به ترتیب ساعت‌گرد: بالا-چپ، بالا-راست، پایین-راست، پایین-چپ)
  */
 data class CornerPoints(
     val p0: Offset, // بالا - چپ (Top-Left)
@@ -36,125 +37,106 @@ data class CornerPoints(
 object PerspectiveCropEngine {
 
     /**
-     * تشخیص هوشمند لبه‌ها (Edge Detection):
-     * الگوریتم سبک و سریع نیتیو کاتلین جهت شناسایی ۴ گوشه سند یا حاشیه بهینه
+     * تشخیص هوشمند پیشرفته لبه‌ها (Robust Multi-Ray Edge Detection):
+     * با تحلیل کنتراست و گرادیان نوری از ۴ گوشه به سمت مرکز جهت شناسایی دقیق گوشه‌های کاغذ یا کارت
      */
     fun detectDocumentCorners(bitmap: Bitmap): CornerPoints {
         val width = bitmap.width.toFloat()
         val height = bitmap.height.toFloat()
 
         try {
-            // برای سرعت بالا، نمونه‌برداری سبکی از ابعاد انجام می‌دهیم
-            val sampleW = 120
-            val sampleH = 160
+            // نمونه‌برداری سبک با نسبت ابعاد برای پردازش بلادرنگ و سریع
+            val sampleW = 160
+            val sampleH = ((160f / width) * height).toInt().coerceIn(120, 240)
             val scaled = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, false)
             val pixels = IntArray(sampleW * sampleH)
             scaled.getPixels(pixels, 0, sampleW, 0, 0, sampleW, sampleH)
 
-            // محاسبه شدت روشنایی (Luminance) میانگین مرزهای خارجی
-            var borderLuminanceSum = 0L
-            var borderCount = 0
+            // محاسبه روشنایی پس‌زمینه در حاشیه‌های بسیار بیرونی (میز یا فرش)
+            var bgLumSum = 0L
+            var bgCount = 0
+            val borderMargin = 4
             for (x in 0 until sampleW) {
-                borderLuminanceSum += getLuminance(pixels[x])
-                borderLuminanceSum += getLuminance(pixels[(sampleH - 1) * sampleW + x])
-                borderCount += 2
-            }
-            for (y in 0 until sampleH) {
-                borderLuminanceSum += getLuminance(pixels[y * sampleW])
-                borderLuminanceSum += getLuminance(pixels[y * sampleW + (sampleW - 1)])
-                borderCount += 2
-            }
-            val avgBorderLum = (borderLuminanceSum / max(1, borderCount)).toInt()
-
-            // اسکن از ۴ جهت برای پیدا کردن تغییر کنتراست سند نسبت به پس‌زمینه
-            var topY = 0
-            var bottomY = sampleH - 1
-            var leftX = 0
-            var rightX = sampleW - 1
-
-            val thresholdDiff = 25
-
-            // اسکن از بالا
-            for (y in 0 until sampleH / 3) {
-                var rowLumSum = 0L
-                for (x in sampleW / 4 until (sampleW * 3) / 4) {
-                    rowLumSum += getLuminance(pixels[y * sampleW + x])
-                }
-                val rowAvg = (rowLumSum / (sampleW / 2)).toInt()
-                if (Math.abs(rowAvg - avgBorderLum) > thresholdDiff) {
-                    topY = y
-                    break
+                for (y in 0 until borderMargin) {
+                    bgLumSum += getLuminance(pixels[y * sampleW + x])
+                    bgLumSum += getLuminance(pixels[(sampleH - 1 - y) * sampleW + x])
+                    bgCount += 2
                 }
             }
+            val avgBgLum = (bgLumSum / max(1, bgCount)).toInt()
 
-            // اسکن از پایین
-            for (y in sampleH - 1 downTo (sampleH * 2) / 3) {
-                var rowLumSum = 0L
-                for (x in sampleW / 4 until (sampleW * 3) / 4) {
-                    rowLumSum += getLuminance(pixels[y * sampleW + x])
+            // تابع کمکی برای ردیابی شعاعی لبه از یک نقطه شروع به سمت نقطه هدف
+            fun traceEdge(startX: Float, startY: Float, targetX: Float, targetY: Float): Offset {
+                val steps = 30
+                var bestX = startX
+                var bestY = startY
+                var maxGrad = 0
+                val minSteps = 2 // حداقل فاصله از لبه کادر
+                val maxSteps = 22 // حداکثر پیشروی به داخل (حدود ۳۰ تا ۳۵ درصد)
+
+                for (i in minSteps..maxSteps) {
+                    val t = i.toFloat() / steps
+                    val cx = (startX + (targetX - startX) * t).toInt().coerceIn(0, sampleW - 1)
+                    val cy = (startY + (targetY - startY) * t).toInt().coerceIn(0, sampleH - 1)
+                    val currentLum = getLuminance(pixels[cy * sampleW + cx])
+                    val grad = Math.abs(currentLum - avgBgLum)
+
+                    if (grad > maxGrad && grad > 22) {
+                        maxGrad = grad
+                        bestX = cx.toFloat()
+                        bestY = cy.toFloat()
+                    }
                 }
-                val rowAvg = (rowLumSum / (sampleW / 2)).toInt()
-                if (Math.abs(rowAvg - avgBorderLum) > thresholdDiff) {
-                    bottomY = y
-                    break
-                }
+                return Offset(bestX, bestY)
             }
 
-            // اسکن از چپ
-            for (x in 0 until sampleW / 3) {
-                var colLumSum = 0L
-                for (y in sampleH / 4 until (sampleH * 3) / 4) {
-                    colLumSum += getLuminance(pixels[y * sampleW + x])
-                }
-                val colAvg = (colLumSum / (sampleH / 2)).toInt()
-                if (Math.abs(colAvg - avgBorderLum) > thresholdDiff) {
-                    leftX = x
-                    break
-                }
-            }
+            val centerX = sampleW / 2f
+            val centerY = sampleH / 2f
 
-            // اسکن از راست
-            for (x in sampleW - 1 downTo (sampleW * 2) / 3) {
-                var colLumSum = 0L
-                for (y in sampleH / 4 until (sampleH * 3) / 4) {
-                    colLumSum += getLuminance(pixels[y * sampleW + x])
-                }
-                val colAvg = (colLumSum / (sampleH / 2)).toInt()
-                if (Math.abs(colAvg - avgBorderLum) > thresholdDiff) {
-                    rightX = x
-                    break
-                }
-            }
+            // ردیابی ۴ گوشه اصلی در جهت مرکز
+            val foundP0 = traceEdge(0f, 0f, centerX, centerY)
+            val foundP1 = traceEdge(sampleW - 1f, 0f, centerX, centerY)
+            val foundP2 = traceEdge(sampleW - 1f, sampleH - 1f, centerX, centerY)
+            val foundP3 = traceEdge(0f, sampleH - 1f, centerX, centerY)
 
             scaled.recycle()
 
-            // تبدیل مقیاس به ابعاد واقعی تصویر
-            val xRatio = width / sampleW
-            val yRatio = height / sampleH
+            val scaleX = width / sampleW
+            val scaleY = height / sampleH
 
-            val marginPercent = 0.05f
-            val minX = (leftX * xRatio).coerceIn(width * marginPercent, width * 0.25f)
-            val maxX = (rightX * xRatio).coerceIn(width * 0.75f, width * (1f - marginPercent))
-            val minY = (topY * yRatio).coerceIn(height * marginPercent, height * 0.25f)
-            val maxY = (bottomY * yRatio).coerceIn(height * 0.75f, height * (1f - marginPercent))
+            val safeMarginX = width * 0.05f
+            val safeMarginY = height * 0.05f
 
-            return CornerPoints(
-                p0 = Offset(minX, minY),
-                p1 = Offset(maxX, minY),
-                p2 = Offset(maxX, maxY),
-                p3 = Offset(minX, maxY)
+            // تبدیل مختصات نمونه‌برداری به ابعاد اصلی تصویر با حاشیه امن
+            val finalP0 = Offset(
+                x = (foundP0.x * scaleX).coerceIn(safeMarginX, width * 0.35f),
+                y = (foundP0.y * scaleY).coerceIn(safeMarginY, height * 0.35f)
             )
+            val finalP1 = Offset(
+                x = (foundP1.x * scaleX).coerceIn(width * 0.65f, width - safeMarginX),
+                y = (foundP1.y * scaleY).coerceIn(safeMarginY, height * 0.35f)
+            )
+            val finalP2 = Offset(
+                x = (foundP2.x * scaleX).coerceIn(width * 0.65f, width - safeMarginX),
+                y = (foundP2.y * scaleY).coerceIn(height * 0.65f, height - safeMarginY)
+            )
+            val finalP3 = Offset(
+                x = (foundP3.x * scaleX).coerceIn(safeMarginX, width * 0.35f),
+                y = (foundP3.y * scaleY).coerceIn(height * 0.65f, height - safeMarginY)
+            )
+
+            return CornerPoints(p0 = finalP0, p1 = finalP1, p2 = finalP2, p3 = finalP3)
         } catch (e: Exception) {
             e.printStackTrace()
-            // پیش‌فرض امن: حاشیه ۵ درصدی استاندارد
-            return getDefaultCorners(width, height)
+            // پیش‌فرض امن و شکیل: حاشیه ۵ درصدی استاندارد
+            return getDefaultCorners(width, height, 0.05f)
         }
     }
 
     /**
-     * محاسبه ۴ نقطه پیش‌فرض با حاشیه مناسب
+     * محاسبه ۴ نقطه پیش‌فرض با حاشیه مشخص
      */
-    fun getDefaultCorners(width: Float, height: Float, marginFactor: Float = 0.06f): CornerPoints {
+    fun getDefaultCorners(width: Float, height: Float, marginFactor: Float = 0.05f): CornerPoints {
         val mx = width * marginFactor
         val my = height * marginFactor
         return CornerPoints(
@@ -166,8 +148,8 @@ object PerspectiveCropEngine {
     }
 
     /**
-     * برش پرسپکتیو با تبدیل هندسی نیتیو setPolyToPoly:
-     * تصویر کج‌شده یا زاویه‌دار را به یک مستطیل کاملاً صاف و تراز تبدیل می‌کند
+     * برش پرسپکتیو با تبدیل هندسی نیتیو Matrix.setPolyToPoly:
+     * تصویر زاویه‌دار را به یک مستطیل کاملاً صاف، تراز و با کیفیت تبدیل می‌کند
      */
     fun cropPerspective(source: Bitmap, corners: CornerPoints): Bitmap {
         val p0 = corners.p0
@@ -175,16 +157,16 @@ object PerspectiveCropEngine {
         val p2 = corners.p2
         val p3 = corners.p3
 
-        // ۱. محاسبه ابعاد هدف بر اساس فاصله اقلیدسی لبه‌ها
+        // ۱. محاسبه ابعاد خروجی بر اساس فاصله اقلیدسی لبه‌ها
         val topWidth = hypot(p1.x - p0.x, p1.y - p0.y)
         val bottomWidth = hypot(p2.x - p3.x, p2.y - p3.y)
-        val targetWidth = max(topWidth, bottomWidth).toInt().coerceIn(200, 4000)
+        val targetWidth = max(topWidth, bottomWidth).toInt().coerceIn(200, 4096)
 
         val leftHeight = hypot(p3.x - p0.x, p3.y - p0.y)
         val rightHeight = hypot(p2.x - p1.x, p2.y - p1.y)
-        val targetHeight = max(leftHeight, rightHeight).toInt().coerceIn(200, 4000)
+        val targetHeight = max(leftHeight, rightHeight).toInt().coerceIn(200, 4096)
 
-        // ۲. آرایه نقاط مبدا (۴ گوشه سند انتخاب شده توسط کاربر)
+        // ۲. آرایه نقاط مبدا (۴ گوشه سند انتخابی)
         val src = floatArrayOf(
             p0.x, p0.y, // بالا چپ
             p1.x, p1.y, // بالا راست
@@ -192,7 +174,7 @@ object PerspectiveCropEngine {
             p3.x, p3.y  // پایین چپ
         )
 
-        // ۳. آرایه نقاط مقصد (مستطیل صاف و عمودی خروجی)
+        // ۳. آرایه نقاط مقصد (مستطیل افقی/عمودی خروجی)
         val dst = floatArrayOf(
             0f, 0f,
             targetWidth.toFloat(), 0f,
@@ -210,17 +192,29 @@ object PerspectiveCropEngine {
             canvas.drawBitmap(source, matrix, paint)
             output
         } else {
-            // در صورت وجود نقاط غیرمحدب یا هم‌پوشان، برش مستطیلی استاندارد انجام می‌شود
-            val minX = minOf(p0.x, p1.x, p2.x, p3.x).toInt().coerceIn(0, source.width - 50)
-            val minY = minOf(p0.y, p1.y, p2.y, p3.y).toInt().coerceIn(0, source.height - 50)
-            val maxX = maxOf(p0.x, p1.x, p2.x, p3.x).toInt().coerceIn(minX + 50, source.width)
-            val maxY = maxOf(p0.y, p1.y, p2.y, p3.y).toInt().coerceIn(minY + 50, source.height)
-            Bitmap.createBitmap(source, minX, minY, maxX - minX, maxY - minY)
+            // در صورت عدم همگرایی ماتریس، برش مستطیلی استاندارد جایگزین می‌شود
+            val minX = minOf(p0.x, p1.x, p2.x, p3.x).toInt().coerceIn(0, source.width - 20)
+            val minY = minOf(p0.y, p1.y, p2.y, p3.y).toInt().coerceIn(0, source.height - 20)
+            val maxX = maxOf(p0.x, p1.x, p2.x, p3.x).toInt().coerceIn(minX + 20, source.width)
+            val maxY = maxOf(p0.y, p1.y, p2.y, p3.y).toInt().coerceIn(minY + 20, source.height)
+            Bitmap.createBitmap(source, minX, minY, max(10, maxX - minX), max(10, maxY - minY))
         }
     }
 
     /**
-     * چرخش ۹۰ درجه تصویر جهت تراز سریع اسناد افقی/عمودی
+     * استخراج ناحیه ذره‌بین (Loupe/Magnifier) در اطراف گوشه مورد نظر جهت تنظیم دقیق میلی‌متری
+     */
+    fun extractMagnifierBitmap(source: Bitmap, center: Offset, sizePx: Int = 140): Bitmap {
+        val halfSize = sizePx / 2
+        val left = (center.x - halfSize).toInt().coerceIn(0, max(0, source.width - sizePx))
+        val top = (center.y - halfSize).toInt().coerceIn(0, max(0, source.height - sizePx))
+        val w = min(sizePx, source.width - left)
+        val h = min(sizePx, source.height - top)
+        return Bitmap.createBitmap(source, left, top, max(1, w), max(1, h))
+    }
+
+    /**
+     * چرخش ۹۰ درجه تصویر جهت تراز سریع اسناد افقی یا عمودی
      */
     fun rotateBitmap(source: Bitmap, degrees: Float): Bitmap {
         if (degrees % 360f == 0f) return source
