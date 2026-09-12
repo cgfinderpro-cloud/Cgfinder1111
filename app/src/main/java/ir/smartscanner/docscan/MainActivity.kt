@@ -1,8 +1,11 @@
 package ir.smartscanner.docscan
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -15,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -27,6 +32,8 @@ import ir.smartscanner.docscan.ui.screens.HomeScreen
 import ir.smartscanner.docscan.ui.screens.PreviewScreen
 import ir.smartscanner.docscan.ui.theme.SmartScannerTheme
 import ir.smartscanner.docscan.util.DocFilterEngine
+import ir.smartscanner.docscan.util.DocStorageManager
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,73 +57,120 @@ fun SmartScannerApp() {
     val navController = rememberNavController()
     val context = LocalContext.current
 
-    // داده‌های اولیه مدارک اخیر (با امکان اضافه شدن اسناد جدید دوربین و گالری)
-    var documentList by remember {
-        mutableStateOf(
-            listOf(
-                DocumentItem(
-                    id = "doc-1",
-                    title = "شناسنامه و کارت ملی هوشمند",
-                    datePersian = "۲۲ اردیبهشت ۱۴۰۳",
-                    filter = ScanFilter.PHOTOCOPY,
-                    pageCount = 2
-                ),
-                DocumentItem(
-                    id = "doc-2",
-                    title = "قرارداد کاری و سفته بانکی",
-                    datePersian = "۱۸ اردیبهشت ۱۴۰۳",
-                    filter = ScanFilter.CLEAR_COLOR,
-                    pageCount = 4
-                ),
-                DocumentItem(
-                    id = "doc-3",
-                    title = "قبض بیمه و گواهی مهارت فنی",
-                    datePersian = "۱۰ اردیبهشت ۱۴۰۳",
-                    filter = ScanFilter.BLACK_AND_WHITE,
-                    pageCount = 1
-                )
-            )
-        )
+    // ۱. لیست اسناد واقعی خوانده‌شده از حافظه محلی
+    var documentList by remember { mutableStateOf<List<DocumentItem>>(emptyList()) }
+
+    // سند موقت ایجادشده از دوربین یا گالری که هنوز ذخیره نشده
+    var pendingDocument by remember { mutableStateOf<DocumentItem?>(null) }
+
+    // متغیر کمکی برای آدرس موقت تصویر دوربین
+    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    // بارگذاری اسناد واقعی ذخیره‌شده در شروع و پس از هر تغییر
+    fun refreshDocuments() {
+        documentList = DocStorageManager.getAllDocuments(context)
     }
 
-    // ۱. اتصال واقعی دوربین با لانچر استاندارد ActivityResultContracts.TakePicturePreview
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap: Bitmap? ->
-        if (bitmap != null) {
-            val newDocId = "doc-${System.currentTimeMillis()}"
-            val newDoc = DocumentItem(
-                id = newDocId,
-                title = "اسکن دوربین ${documentList.size + 1}",
-                datePersian = "امروز",
-                filter = ScanFilter.PHOTOCOPY,
-                pageCount = 1,
-                bitmap = bitmap
-            )
-            documentList = listOf(newDoc) + documentList
-            navController.navigate(Screen.Preview.createRoute(newDocId))
+    LaunchedEffect(Unit) {
+        refreshDocuments()
+    }
+
+    // هدایت به صفحه پیش‌نمایش سند جدید
+    fun openNewDocumentPreview(bitmap: Bitmap, title: String) {
+        val newDocId = "new_${System.currentTimeMillis()}"
+        val newDoc = DocumentItem(
+            id = newDocId,
+            title = title,
+            datePersian = DocStorageManager.getPersianDateNow(),
+            filter = ScanFilter.PHOTOCOPY,
+            pageCount = 1,
+            bitmap = bitmap
+        )
+        pendingDocument = newDoc
+        navController.navigate(Screen.Preview.createRoute(newDocId))
+    }
+
+    // ۲. لانچر عکس‌برداری کیفیت بالا با TakePicture
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success && tempCameraUri != null) {
+            val bitmap = DocFilterEngine.loadBitmapFromUri(context, tempCameraUri!!)
+            if (bitmap != null) {
+                openNewDocumentPreview(bitmap, "سند دوربین - ${DocStorageManager.getPersianDateNow()}")
+            } else {
+                Toast.makeText(context, "خطا در بارگذاری تصویر دوربین", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
-    // ۲. اتصال واقعی گالری دستگاه با لانچر استاندارد ActivityResultContracts.GetContent
+    // لانچر پشتیبان برای پیش‌نمایش مستقیم دوربین در صورت عدم دسترسی به FileProvider
+    val previewCameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        if (bitmap != null) {
+            openNewDocumentPreview(bitmap, "سند دوربین - ${DocStorageManager.getPersianDateNow()}")
+        }
+    }
+
+    // تابع ایمن راه‌اندازی دوربین
+    val launchCameraDirectly = {
+        try {
+            val cameraDir = File(context.cacheDir, "camera").apply { if (!exists()) mkdirs() }
+            val photoFile = File(cameraDir, "camera_doc_${System.currentTimeMillis()}.jpg")
+            val photoUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                photoFile
+            )
+            tempCameraUri = photoUri
+            takePictureLauncher.launch(photoUri)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // پشتیبان در صورت خطای ساخت فایل موقت
+            try {
+                previewCameraLauncher.launch(null)
+            } catch (ex: Exception) {
+                Toast.makeText(context, "خطا در باز کردن دوربین: ${ex.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // ۳. لانچر درخواست مجوز دسترسی به دوربین (حل قطعی مشکل کرش برنامه)
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            launchCameraDirectly()
+        } else {
+            Toast.makeText(
+                context,
+                "جهت عکاسی از اسناد، دسترسی به دوربین الزامی است",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    // بررسی و راه‌اندازی دوربین با درخواست مجوز در صورت نیاز
+    val onLaunchCamera = {
+        val permission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+        if (permission == PackageManager.PERMISSION_GRANTED) {
+            launchCameraDirectly()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    // ۴. لانچر گالری دستگاه
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             val loadedBitmap = DocFilterEngine.loadBitmapFromUri(context, uri)
             if (loadedBitmap != null) {
-                val newDocId = "doc-${System.currentTimeMillis()}"
-                val newDoc = DocumentItem(
-                    id = newDocId,
-                    title = "مدرک گالری ${documentList.size + 1}",
-                    datePersian = "امروز",
-                    filter = ScanFilter.PHOTOCOPY,
-                    pageCount = 1,
-                    bitmap = loadedBitmap,
-                    imageUri = uri.toString()
-                )
-                documentList = listOf(newDoc) + documentList
-                navController.navigate(Screen.Preview.createRoute(newDocId))
+                openNewDocumentPreview(loadedBitmap, "سند گالری - ${DocStorageManager.getPersianDateNow()}")
+            } else {
+                Toast.makeText(context, "خطا در خواندن تصویر از گالری", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -132,9 +186,12 @@ fun SmartScannerApp() {
                 onOpenDocument = { docId ->
                     navController.navigate(Screen.Preview.createRoute(docId))
                 },
-                onLaunchCamera = {
-                    cameraLauncher.launch(null)
+                onDeleteDocument = { docId ->
+                    DocStorageManager.deleteDocument(context, docId)
+                    refreshDocuments()
+                    Toast.makeText(context, "مدرک با موفقیت حذف شد", Toast.LENGTH_SHORT).show()
                 },
+                onLaunchCamera = onLaunchCamera,
                 onLaunchGallery = {
                     galleryLauncher.launch("image/*")
                 }
@@ -149,29 +206,21 @@ fun SmartScannerApp() {
             )
         ) { backStackEntry ->
             val docId = backStackEntry.arguments?.getString("docId")
-            val document = documentList.find { it.id == docId }
+            val document = if (docId == pendingDocument?.id) {
+                pendingDocument
+            } else {
+                documentList.find { it.id == docId }
+            }
 
             PreviewScreen(
                 document = document,
                 onBack = {
                     navController.popBackStack()
                 },
-                onSave = { updatedFilter, updatedBitmap ->
-                    if (document != null) {
-                        documentList = documentList.map {
-                            if (it.id == document.id) {
-                                it.copy(
-                                    filter = updatedFilter,
-                                    bitmap = updatedBitmap ?: it.bitmap
-                                )
-                            } else {
-                                it
-                            }
-                        }
-                    }
-                },
-                onShare = { _, _ ->
-                    // هندل شده درون PreviewScreen با DocFilterEngine.shareBitmap
+                onSaveSuccess = {
+                    refreshDocuments()
+                    pendingDocument = null
+                    navController.popBackStack()
                 }
             )
         }

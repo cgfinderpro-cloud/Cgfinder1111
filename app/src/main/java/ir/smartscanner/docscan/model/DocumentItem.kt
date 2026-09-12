@@ -15,5 +15,6 @@ data class DocumentItem(
     val pageCount: Int = 1,
     val imageResId: Int? = null,
     val imageUri: String? = null,
+    val filePath: String? = null,
     val bitmap: android.graphics.Bitmap? = null
 )

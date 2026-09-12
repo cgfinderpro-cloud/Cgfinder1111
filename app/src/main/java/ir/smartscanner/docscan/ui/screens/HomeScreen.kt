@@ -11,12 +11,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,7 +28,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.smartscanner.docscan.model.DocumentItem
-import ir.smartscanner.docscan.model.ScanFilter
 import ir.smartscanner.docscan.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -35,66 +35,101 @@ import ir.smartscanner.docscan.ui.theme.*
 fun HomeScreen(
     documents: List<DocumentItem>,
     onOpenDocument: (String) -> Unit,
+    onDeleteDocument: (String) -> Unit,
     onLaunchCamera: () -> Unit,
     onLaunchGallery: () -> Unit
 ) {
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var documentToDelete by remember { mutableStateOf<DocumentItem?>(null) }
+
+    val filteredDocs = remember(documents, searchQuery) {
+        if (searchQuery.isBlank()) {
+            documents
+        } else {
+            documents.filter { it.title.contains(searchQuery.trim(), ignoreCase = true) }
+        }
+    }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(38.dp)
+            if (isSearchActive) {
+                TopAppBar(
+                    title = {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("جستجو در مدارک...", color = TextTertiary) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryBlue,
+                                unfocusedBorderColor = Color.Transparent
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            isSearchActive = false
+                            searchQuery = ""
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "بستن جستجو",
+                                tint = TextPrimary
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceLight)
+                )
+            } else {
+                TopAppBar(
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Description,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(22.dp)
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Description,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                            Column {
+                                Text(
+                                    text = "اسکنر هوشمند مدارک",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = "فتوکپی، برش پرسپکتیو و ذخیره آفلاین",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
                                 )
                             }
                         }
-                        Column {
-                            Text(
-                                text = "اسکنر مدارک",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                            Text(
-                                text = "فتوکپی و پردازش آفلاین",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondary
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceLight),
+                    actions = {
+                        IconButton(onClick = { isSearchActive = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "جستجو",
+                                tint = TextSecondary
                             )
                         }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = SurfaceLight
-                ),
-                actions = {
-                    IconButton(onClick = { /* جستجو در اسناد */ }) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "جستجو",
-                            tint = TextSecondary
-                        )
-                    }
-                    IconButton(onClick = { /* تنظیمات */ }) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "گزینه‌ها",
-                            tint = TextSecondary
-                        )
-                    }
-                }
-            )
+                )
+            }
         },
         floatingActionButton = {
             // دو دکمه شناور بزرگ (FAB): یکی برای «دوربین» و دیگری برای «گالری»
@@ -174,51 +209,94 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 16.dp, bottom = 90.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 6.dp),
+                        .padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "مدارک اخیر",
+                        text = "مدارک اسکن‌شده",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
                     Text(
-                        text = "${documents.size} مدرک",
+                        text = "${filteredDocs.size} مدرک",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextTertiary
                     )
                 }
             }
 
-            if (documents.isEmpty()) {
+            if (filteredDocs.isEmpty()) {
                 item {
-                    EmptyDocumentsPlaceholder()
+                    EmptyDocumentsPlaceholder(
+                        isSearching = searchQuery.isNotBlank(),
+                        onLaunchCamera = onLaunchCamera,
+                        onLaunchGallery = onLaunchGallery
+                    )
                 }
             } else {
-                items(documents, key = { it.id }) { doc ->
+                items(filteredDocs, key = { it.id }) { doc ->
                     DocumentCard(
                         doc = doc,
-                        onClick = { onOpenDocument(doc.id) }
+                        onClick = { onOpenDocument(doc.id) },
+                        onDelete = { documentToDelete = doc }
                     )
                 }
             }
         }
+    }
+
+    // دیالوگ تأیید حذف مدرک
+    documentToDelete?.let { doc ->
+        AlertDialog(
+            onDismissRequest = { documentToDelete = null },
+            title = {
+                Text(
+                    text = "حذف مدرک",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "آیا از حذف مدرک «${doc.title}» اطمینان دارید؟ تصویر این مدرک از حافظه دستگاه پاک خواهد شد.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteDocument(doc.id)
+                        documentToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("حذف", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { documentToDelete = null }) {
+                    Text("انصراف")
+                }
+            }
+        )
     }
 }
 
 @Composable
 fun DocumentCard(
     doc: DocumentItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -231,14 +309,14 @@ fun DocumentCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // عکس بندانگشتی مدرک (Thumbnail)
+            // عکس بندانگشتی واقعی مدرک (Thumbnail)
             Box(
                 modifier = Modifier
-                    .size(64.dp, 80.dp)
+                    .size(68.dp, 88.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(SurfaceVariantLight)
                     .border(1.dp, BorderColor, RoundedCornerShape(8.dp)),
@@ -254,38 +332,12 @@ fun DocumentCard(
                         contentScale = ContentScale.Crop
                     )
                 } else {
-                    // شبیه‌ساز بصری صفحه اسکن‌شده
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(6.dp),
-                        verticalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(0.6f)
-                                .height(4.dp)
-                                .background(PrimaryBlue.copy(alpha = 0.6f), RoundedCornerShape(2.dp))
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(0.9f)
-                                .height(3.dp)
-                                .background(TextTertiary.copy(alpha = 0.4f), RoundedCornerShape(1.dp))
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(0.75f)
-                                .height(3.dp)
-                                .background(TextTertiary.copy(alpha = 0.4f), RoundedCornerShape(1.dp))
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(0.85f)
-                                .height(3.dp)
-                                .background(TextTertiary.copy(alpha = 0.4f), RoundedCornerShape(1.dp))
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = null,
+                        tint = TextTertiary,
+                        modifier = Modifier.size(32.dp)
+                    )
                 }
             }
 
@@ -304,7 +356,8 @@ fun DocumentCard(
                 Text(
                     text = "تاریخ: ${doc.datePersian}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
+                    color = TextSecondary,
+                    fontSize = 13.sp
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -330,43 +383,71 @@ fun DocumentCard(
                     )
                 }
             }
+
+            // دکمه حذف
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = "حذف مدرک",
+                    tint = TextTertiary.copy(alpha = 0.8f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }
 
 @Composable
-fun EmptyDocumentsPlaceholder() {
+fun EmptyDocumentsPlaceholder(
+    isSearching: Boolean,
+    onLaunchCamera: () -> Unit,
+    onLaunchGallery: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 48.dp),
+            .padding(vertical = 48.dp, horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Surface(
             shape = CircleShape,
             color = SurfaceVariantLight,
-            modifier = Modifier.size(72.dp)
+            modifier = Modifier.size(76.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Default.Description,
                     contentDescription = null,
                     tint = TextTertiary,
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(38.dp)
                 )
             }
         }
-        Text(
-            text = "هنوز مدرکی اسکن نشده است",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary
-        )
-        Text(
-            text = "با استفاده از دکمه دوربین یا گالری، اولین مدرک خود را اسکن کنید",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary
-        )
+
+        if (isSearching) {
+            Text(
+                text = "مدرکی با این عنوان یافت نشد",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+        } else {
+            Text(
+                text = "هنوز مدرکی ذخیره نشده است",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+            Text(
+                text = "با لمس دکمه «دوربین» از مدارک عکس بگیرید یا از «گالری» سند وارد کنید و با فیلتر فتوکپی کیفیت آن را ارتقا دهید.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+                lineHeight = 22.sp
+            )
+        }
     }
 }

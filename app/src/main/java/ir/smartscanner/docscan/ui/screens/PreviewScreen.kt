@@ -1,6 +1,7 @@
 package ir.smartscanner.docscan.ui.screens
 
 import android.graphics.Bitmap
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -12,6 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Save
@@ -32,8 +35,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.smartscanner.docscan.model.DocumentItem
 import ir.smartscanner.docscan.model.ScanFilter
+import ir.smartscanner.docscan.ui.components.PerspectiveCropView
 import ir.smartscanner.docscan.ui.theme.*
 import ir.smartscanner.docscan.util.DocFilterEngine
+import ir.smartscanner.docscan.util.DocStorageManager
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,30 +46,62 @@ import kotlinx.coroutines.launch
 fun PreviewScreen(
     document: DocumentItem?,
     onBack: () -> Unit,
-    onSave: (ScanFilter, Bitmap?) -> Unit = { _, _ -> },
-    onShare: (ScanFilter, Bitmap?) -> Unit = { _, _ -> }
+    onSaveSuccess: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // فیلتر انتخابی
     var selectedFilter by remember { mutableStateOf(document?.filter ?: ScanFilter.PHOTOCOPY) }
 
-    // بیت‌مپ خام منبع: یا از عکس واقعی دوربین/گالری، یا ساخت خودکار سند برای داده‌های اولیه
-    val rawBitmap = remember(document?.id) {
-        document?.bitmap ?: DocFilterEngine.createSampleDocBitmap(document?.title ?: "سند رسمی")
+    // عنوان مدرک با امکان ویرایش
+    var docTitle by remember {
+        mutableStateOf(
+            document?.title?.ifEmpty { "سند اسکن‌شده - ${DocStorageManager.getPersianDateNow()}" }
+                ?: "سند اسکن‌شده - ${DocStorageManager.getPersianDateNow()}"
+        )
+    }
+    var showRenameDialog by remember { mutableStateOf(false) }
+
+    // بیت‌مپ خام منبع: یا از تصویر فایل/حافظه یا ساخت نمونه
+    val initialBitmap = remember(document?.id) {
+        document?.bitmap
+            ?: (document?.filePath?.let { DocStorageManager.loadSampledBitmap(it, 1600, 2200) })
+            ?: DocFilterEngine.createSampleDocBitmap(docTitle)
     }
 
-    // بیت‌مپ پردازش‌شده با فیلتر نیتیو انتخاب شده
+    // بیت‌مپ فعال جاری (قبل از فیلتر، پس از اعمال برش‌های پرسپکتیو)
+    var currentRawBitmap by remember { mutableStateOf(initialBitmap) }
+
+    // بیت‌مپ نهایی فیلتر شده (فتوکپی، سیاه و سفید، رنگی شفاف یا اصلی)
     var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
 
-    // اعمال خودکار فیلتر نیتیو با تغییر حالت
-    LaunchedEffect(rawBitmap, selectedFilter) {
+    // وضعیت فعال بودن حالت برش ۴ گوشه و پرسپکتیو
+    var isCropModeOpen by remember { mutableStateOf(false) }
+
+    // اعمال فیلتر هوشمند هر زمان تصویر پایه یا فیلتر تغییر کند
+    LaunchedEffect(currentRawBitmap, selectedFilter) {
         isProcessing = true
-        val filtered = DocFilterEngine.applyFilter(rawBitmap, selectedFilter)
+        val filtered = DocFilterEngine.applyFilter(currentRawBitmap, selectedFilter)
         processedBitmap = filtered
         isProcessing = false
+    }
+
+    // در صورت باز بودن حالت برش، کامپوننت ۴ گوشه نمایش داده می‌شود
+    if (isCropModeOpen) {
+        PerspectiveCropView(
+            initialBitmap = currentRawBitmap,
+            onConfirmCrop = { cropped ->
+                currentRawBitmap = cropped
+                isCropModeOpen = false
+            },
+            onCancel = {
+                isCropModeOpen = false
+            }
+        )
+        return
     }
 
     Scaffold(
@@ -72,15 +109,27 @@ fun PreviewScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = document?.title ?: "پیش‌نمایش مدرک",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.clickable { showRenameDialog = true }
+                    ) {
+                        Text(
+                            text = docTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary,
+                            maxLines = 1
+                        )
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "ویرایش نام",
+                            tint = TextTertiary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 },
                 navigationIcon = {
-                    // دکمه بازگشت
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -90,17 +139,16 @@ fun PreviewScreen(
                     }
                 },
                 actions = {
-                    // دکمه اشتراک‌گذاری با Intent.ACTION_SEND
+                    // دکمه اشتراک‌گذاری
                     IconButton(
                         onClick = {
-                            val bmp = processedBitmap ?: rawBitmap
+                            val bmp = processedBitmap ?: currentRawBitmap
                             coroutineScope.launch {
                                 DocFilterEngine.shareBitmap(
                                     context = context,
                                     bitmap = bmp,
-                                    title = document?.title ?: "مدرک اسکن‌شده"
+                                    title = docTitle
                                 )
-                                onShare(selectedFilter, bmp)
                             }
                         }
                     ) {
@@ -111,20 +159,23 @@ fun PreviewScreen(
                         )
                     }
 
-                    // دکمه ذخیره در حافظه داخلی
+                    // دکمه ذخیره در حافظه محلی دائمی
                     Button(
                         onClick = {
-                            val bmp = processedBitmap ?: rawBitmap
+                            val bmp = processedBitmap ?: currentRawBitmap
                             coroutineScope.launch {
-                                val savedFile = DocFilterEngine.saveBitmapToInternalStorage(
+                                DocStorageManager.saveDocument(
                                     context = context,
-                                    bitmap = bmp,
-                                    title = document?.title ?: "سند"
+                                    title = docTitle,
+                                    filter = selectedFilter,
+                                    bitmap = bmp
                                 )
-                                onSave(selectedFilter, bmp)
-                                snackbarHostState.showSnackbar(
-                                    "مدرک با فیلتر «${selectedFilter.titleFa}» با موفقیت در حافظه ذخیره شد"
-                                )
+                                Toast.makeText(
+                                    context,
+                                    "مدرک «$docTitle» با موفقیت ذخیره شد",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                onSaveSuccess()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
@@ -133,7 +184,7 @@ fun PreviewScreen(
                         ),
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                        modifier = Modifier.padding(start = 6.dp, end = 6.dp)
+                        modifier = Modifier.padding(start = 4.dp, end = 6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Save,
@@ -154,7 +205,7 @@ fun PreviewScreen(
             )
         },
         bottomBar = {
-            // نوار ابزار پایین با ۴ حالت فیلتر: «فتوکپی»، «سیاه و سفید»، «رنگی شفاف» و «اصلی»
+            // نوار ابزار پایین با دکمه برش و ۴ حالت فیلتر
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SurfaceLight,
@@ -164,16 +215,47 @@ fun PreviewScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = "انتخاب حالت فیلتر و پردازش:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextSecondary,
-                        fontWeight = FontWeight.Medium
-                    )
+                    // ردیف دکمه برش و تنظیم کادر
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "حالت فیلتر و پردازش:",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextSecondary,
+                            fontWeight = FontWeight.Medium
+                        )
 
+                        // دکمه باز کردن ابزار برش ۴ گوشه
+                        FilledTonalButton(
+                            onClick = { isCropModeOpen = true },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = PrimaryBlueContainer,
+                                contentColor = OnPrimaryBlueContainer
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Crop,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "برش و تنظیم کادر",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // ردیف دکمه‌های ۴ فیلتر
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -211,6 +293,7 @@ fun PreviewScreen(
                         )
                     }
 
+                    // توضیحات فیلتر و وضعیت در حال پردازش
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -246,22 +329,22 @@ fun PreviewScreen(
         },
         containerColor = BackgroundLight
     ) { innerPadding ->
-        // کادر نمایش تصویر مدرک پردازش‌شده در مرکز
+        // کادر پیش‌نمایش تصویر در وسط صفحه
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(16.dp),
+                .padding(14.dp),
             contentAlignment = Alignment.Center
         ) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.95f)
+                    .fillMaxHeight(0.96f)
                     .shadow(
-                        elevation = 10.dp,
+                        elevation = 8.dp,
                         shape = RoundedCornerShape(14.dp),
-                        spotColor = Color.Black.copy(alpha = 0.25f)
+                        spotColor = Color.Black.copy(alpha = 0.2f)
                     ),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.White)
@@ -270,10 +353,10 @@ fun PreviewScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    val displayBitmap = processedBitmap ?: rawBitmap
+                    val displayBitmap = processedBitmap ?: currentRawBitmap
                     Image(
                         bitmap = displayBitmap.asImageBitmap(),
-                        contentDescription = document?.title ?: "پیش‌نمایش سند",
+                        contentDescription = docTitle,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(8.dp)
@@ -281,7 +364,7 @@ fun PreviewScreen(
                         contentScale = ContentScale.Fit
                     )
 
-                    // نشانگر فیلتر فعال در گوشه سند
+                    // نشانگر گوشه بالا
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f),
@@ -300,6 +383,47 @@ fun PreviewScreen(
                 }
             }
         }
+    }
+
+    // دیالوگ تغییر نام مدرک
+    if (showRenameDialog) {
+        var tempName by remember { mutableStateOf(docTitle) }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = {
+                Text(
+                    text = "تغییر نام مدرک",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = tempName,
+                    onValueChange = { tempName = it },
+                    label = { Text("نام مدرک") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (tempName.isNotBlank()) {
+                            docTitle = tempName.trim()
+                        }
+                        showRenameDialog = false
+                    }
+                ) {
+                    Text("تأیید", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("انصراف")
+                }
+            }
+        )
     }
 }
 
