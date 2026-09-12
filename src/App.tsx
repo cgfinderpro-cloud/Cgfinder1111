@@ -276,11 +276,23 @@ fun PerspectiveCropView(
     },
     'PerspectiveCropEngine.kt': {
       lang: 'kotlin',
-      desc: 'موتور تشخیص هوشمند چندپرتویی لبه‌ها و تصحیح پرسپکتیو با تبدیل هندسی Matrix.setPolyToPoly نیتیو',
+      desc: 'الگوریتم Canny Edge Detection و هاف ترنسفورم (Hough Transform) نیتیو برای استخراج خودکار و فوق‌سریع لبه‌ها و تصحیح پرسپکتیو با Matrix.setPolyToPoly',
       code: `object PerspectiveCropEngine {
-    // ردیابی هوشمند لبه‌ها با محاسبه گرادیان روشنایی از ۴ گوشه به سمت مرکز
+    // تلفیق فیلتر گوسی، Canny Edge Detection و هاف ترنسفورم
     fun detectDocumentCorners(bitmap: Bitmap): CornerPoints {
-        // نمونه‌برداری سبک، مقایسه روشنایی پس‌زمینه (میز) با کاغذ و تعیین ۴ گوشه واقعی
+        // ۱. فیلتر گوسی ۳×۳ جهت کاهش نویز (Gaussian Filter)
+        val smoothed = applyGaussianFilter(gray, sampleW, sampleH)
+        
+        // ۲. الگوریتم Canny: گرادیان سوبل (Sobel)، سرکوب غیربیشینه‌ها (NMS) و آستانه‌گیری پسماند (Hysteresis)
+        val edges = applyCannyEdgeDetector(smoothed, sampleW, sampleH)
+        
+        // ۳. هاف ترنسفورم (Hough Transform) در فضای قطبی r = x*cos(θ) + y*sin(θ)
+        // و تقاطع‌گیری ۴ خط افقی و عمودی مرز کاغذ برای استخراج دقیق ۴ گوشه
+        val houghCorners = findCornersViaHoughTransform(edges, sampleW, sampleH)
+        if (houghCorners != null) return houghCorners
+
+        // ۴. پشتیبان پرتوتابی چندجهته در صورت اسناد با کنتراست بسیار کم
+        return detectCornersFromEdgeMap(edges, sampleW, sampleH) ?: getDefaultCorners(width, height)
     }
 
     // تبدیل ماتریسی تصویر زاویه‌دار به مستطیل صاف و تراز
@@ -948,9 +960,9 @@ jobs:
                 <div className="border-t border-neutral-800 pt-3 space-y-2">
                   <h4 className="text-xs font-bold text-neutral-300">بهبودهای اساسی اعمال‌شده در ساختار اپ:</h4>
                   <ul className="text-xs text-neutral-400 space-y-1.5 list-disc list-inside">
+                    <li><strong>تشخیص هوشمند با Canny و Hough Transform:</strong> تلفیق فیلتر گوسی، گرادیان سوبل، سرکوب غیربیشینه‌ها، آستانه‌گیری دوگانه پسماند و هاف ترنسفورم قطبی جهت تفکیک دقیق ۴ لبه و محاسبه محل تقاطع گوشه‌ها</li>
                     <li><strong>جابجایی مرحله برش:</strong> انتقال ابزار پرسپکتیو به مرحله ۲ بلافاصله پس از عکس‌برداری</li>
                     <li><strong>رفع مشکل گیر کردن کادر:</strong> اصلاح pointerInput با state پایدار بدون ابطال جسچر</li>
-                    <li><strong>تشخیص هوشمند قدرتمند:</strong> الگوریتم چندپرتویی تطبیقی از ۴ گوشه به مرکز</li>
                     <li><strong>ذره‌بین شناور (Magnifier):</strong> بزرگ‌نمایی نقطه اتصال بالای انگشت کاربر</li>
                     <li><strong>خطوط شطرنجی راهنما:</strong> تراز آسان خطوط و حاشیه‌های مدرک</li>
                   </ul>
