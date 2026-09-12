@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -52,6 +53,7 @@ fun PerspectiveCropView(
 
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     var activeHandleIndex by remember { mutableStateOf<Int?>(null) }
+    val density = LocalDensity.current.density
 
     Column(
         modifier = Modifier
